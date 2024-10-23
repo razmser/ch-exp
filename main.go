@@ -7,10 +7,28 @@ import (
 
 	"github.com/ClickHouse/ch-go"
 	"github.com/ClickHouse/ch-go/proto"
+	"pgregory.net/rand"
+
 	"github.com/razmser/ch-exp/data_model"
 )
 
-func createTablesCh(ctx context.Context, conn *ch.Client) {
+func recreateTablesCh(ctx context.Context, conn *ch.Client) {
+	if err := conn.Do(ctx, ch.Query{
+		Body: `DROP TABLE IF EXISTS exp_mv`,
+	}); err != nil {
+		panic(err)
+	}
+	if err := conn.Do(ctx, ch.Query{
+		Body: `DROP TABLE IF EXISTS exp_input`,
+	}); err != nil {
+		panic(err)
+	}
+	if err := conn.Do(ctx, ch.Query{
+		Body: `DROP TABLE IF EXISTS exp`,
+	}); err != nil {
+		panic(err)
+	}
+
 	if err := conn.Do(ctx, ch.Query{
 		Body: `CREATE TABLE IF NOT EXISTS exp
 (
@@ -52,14 +70,13 @@ func insertCh(ctx context.Context, conn *ch.Client) {
 	)
 
 	// Append 10 rows to initial data block.
-	id.Append(1)
-	value.Append(1)
-	id.Append(1)
-	value.Append(2)
-	id.Append(2)
-	value.Append(2)
-	id.Append(2)
-	value.Append(3)
+	for i := int32(0); i < 10; i++ {
+		rng := rand.New(uint64(i))
+		for v := 0; v < 1000; v++ {
+			id.Append(i)
+			value.Append(rng.Int31n(100) + i*10)
+		}
+	}
 
 	// Insert single data block.
 	input := proto.Input{
@@ -81,7 +98,7 @@ func selectCh(ctx context.Context, conn *ch.Client) {
 		value proto.ColUInt64
 	)
 	if err := conn.Do(ctx, ch.Query{
-		Body: "SELECT id, uniqMerge(value) AS value FROM exp GROUP BY id",
+		Body: "SELECT id, uniqMerge(value) AS value FROM exp GROUP BY id ORDER BY id",
 		Result: proto.Results{
 			{Name: "id", Data: &id},
 			{Name: "value", Data: &value},
@@ -95,13 +112,28 @@ func selectCh(ctx context.Context, conn *ch.Client) {
 	}
 }
 
+func selectAndGroupAllCh(ctx context.Context, conn *ch.Client) {
+	var (
+		value proto.ColUInt64
+	)
+	if err := conn.Do(ctx, ch.Query{
+		Body: "SELECT uniqMerge(value) AS value FROM exp",
+		Result: proto.Results{
+			{Name: "value", Data: &value},
+		},
+	}); err != nil {
+		panic(err)
+	}
+	fmt.Println("merged items count", value[0])
+}
+
 func selectAggStateCh(ctx context.Context, conn *ch.Client) {
 	var (
 		id    proto.ColInt32
 		value data_model.AggregateUniqInt32
 	)
 	if err := conn.Do(ctx, ch.Query{
-		Body: "SELECT id, uniqMergeState(value) AS value FROM exp GROUP BY id",
+		Body: "SELECT id, uniqMergeState(value) AS value FROM exp GROUP BY id ORDER BY id",
 		Result: proto.Results{
 			{Name: "id", Data: &id},
 			{Name: "value", Data: &value},
@@ -114,7 +146,9 @@ func selectAggStateCh(ctx context.Context, conn *ch.Client) {
 	for i := range id {
 		fmt.Printf("%d\t%d\n", id[i], value[i].ItemsCount())
 	}
-	value[0].Merge(value[1])
+	for i := 1; i < len(value); i++ {
+		value[0].Merge(value[i])
+	}
 	fmt.Println("merged items count", value[0].ItemsCount())
 }
 
@@ -129,7 +163,7 @@ func main() {
 	slog.Info("connected")
 
 	slog.Info("creating table...")
-	createTablesCh(ctx, conn)
+	recreateTablesCh(ctx, conn)
 	slog.Info("table created")
 
 	slog.Info("inserting...")
@@ -138,6 +172,7 @@ func main() {
 
 	slog.Info("selecting...")
 	selectCh(ctx, conn)
+	selectAndGroupAllCh(ctx, conn)
 	slog.Info("selected")
 
 	slog.Info("selecting agg...")
