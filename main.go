@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClickHouse/ch-go"
 	"github.com/ClickHouse/ch-go/proto"
+	"github.com/razmser/ch-exp/data_model"
 )
 
 func createTablesCh(ctx context.Context, conn *ch.Client) {
@@ -94,6 +95,29 @@ func selectCh(ctx context.Context, conn *ch.Client) {
 	}
 }
 
+func selectAggStateCh(ctx context.Context, conn *ch.Client) {
+	var (
+		id    proto.ColInt32
+		value data_model.AggregateUniqInt32
+	)
+	if err := conn.Do(ctx, ch.Query{
+		Body: "SELECT id, uniqMergeState(value) AS value FROM exp GROUP BY id",
+		Result: proto.Results{
+			{Name: "id", Data: &id},
+			{Name: "value", Data: &value},
+		},
+	}); err != nil {
+		panic(err)
+	}
+
+	fmt.Println("id\tvalue")
+	for i := range id {
+		fmt.Printf("%d\t%d\n", id[i], value[i].ItemsCount())
+	}
+	value[0].Merge(value[1])
+	fmt.Println("merged items count", value[0].ItemsCount())
+}
+
 func main() {
 	ctx := context.Background()
 
@@ -115,4 +139,8 @@ func main() {
 	slog.Info("selecting...")
 	selectCh(ctx, conn)
 	slog.Info("selected")
+
+	slog.Info("selecting agg...")
+	selectAggStateCh(ctx, conn)
+	slog.Info("selected agg")
 }
